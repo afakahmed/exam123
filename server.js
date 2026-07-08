@@ -11,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb+srv://root:root@cluster0.ordklei.mongodb.net/examportal?appName=Cluster0';
 
 // ─── Middleware ───
-// Increased limit to handle PDF/Image base64 uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.set('view engine', 'ejs');
@@ -27,10 +26,18 @@ app.use(session({
 
 // ─── MongoDB Connection ───
 mongoose.connect(MONGO_URI)
-  .then(() => console.log('MongoDB connected'))
+  .then(() => {
+    console.log('MongoDB connected');
+    // Auto-create a default department if none exists to prevent empty dropdowns on initial setup
+    mongoose.model('Department').countDocuments().then(count => {
+      if(count === 0) mongoose.model('Department').create({ name: 'General' });
+    });
+  })
   .catch(e => console.error('MongoDB error:', e.message));
 
 // ─── Mongoose Models ───
+const departmentSchema = new mongoose.Schema({ name: { type: String, required: true, unique: true } });
+
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -42,7 +49,6 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Auto-generate Student ID
 userSchema.pre('save', async function(next) {
   if (this.isNew && this.role === 'student' && !this.studentId) {
     const count = await mongoose.model('User').countDocuments({ role: 'student' });
@@ -60,7 +66,7 @@ const examSchema = new mongoose.Schema({
   questions: [{
     type: { type: String, enum: ['mcq', 'file'], default: 'mcq' },
     questionText: { type: String, required: true },
-    questionFile: { type: String }, // Base64 PDF/Image for subjective questions
+    questionFile: { type: String }, 
     options: [{ type: String }],
     correctAnswer: { type: Number, default: 0 },
     marks: { type: Number, default: 1, min: 1 }
@@ -76,22 +82,39 @@ const submissionSchema = new mongoose.Schema({
   answers: [{ 
     questionIndex: Number, 
     selectedAnswer: { type: Number, default: -1 },
-    answerFile: { type: String } // Base64 PDF/Image uploaded by student
+    answerFile: { type: String } 
   }],
   score: { type: Number, default: 0 },
   totalMarks: { type: Number, default: 0 },
   percentage: { type: Number, default: 0 },
   passed: { type: Boolean, default: false },
-  needsManualGrading: { type: Boolean, default: false }, // True if exam has file uploads
+  needsManualGrading: { type: Boolean, default: false }, 
   startedAt: { type: Date, default: Date.now },
   submittedAt: Date,
   timeTaken: Number,
   isSubmitted: { type: Boolean, default: false }
 });
 
+const videoSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  youtubeUrl: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const messageSchema = new mongoose.Schema({
+  subject: { type: String, required: true },
+  body: { type: String, required: true },
+  toStudent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  fromAdmin: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Department = mongoose.model('Department', departmentSchema);
 const User = mongoose.model('User', userSchema);
 const Exam = mongoose.model('Exam', examSchema);
 const Submission = mongoose.model('Submission', submissionSchema);
+const Video = mongoose.model('Video', videoSchema);
+const Message = mongoose.model('Message', messageSchema);
 
 // ─── Middleware ───
 const auth = (req, res, next) => { if (!req.session.userId) return res.status(401).json({ error: 'Login required' }); next(); };
@@ -108,6 +131,14 @@ app.get('/', (req, res) => {
     profilePhoto: req.session.profilePhoto,
     department: req.session.department
   } : null });
+});
+
+// ─── Public API ───
+app.get('/api/departments', async (req, res) => {
+  try {
+    const depts = await Department.find().sort({ name: 1 }).lean();
+    res.json(depts);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── Auth APIs ───
@@ -142,7 +173,6 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 
-// Profile API
 app.post('/api/user/profile', auth, async (req, res) => {
   try {
     const user = await User.findById(req.session.userId);
@@ -159,11 +189,9 @@ app.get('/api/admin/dashboard', auth, adminOnly, async (req, res) => {
     const exams = await Exam.find({ createdBy: req.session.userId }).lean();
     const subs = await Submission.find({ isSubmitted: true }).populate('exam').lean();
     
-    // Aggregation for Pie Chart
     let passed = 0, failed = 0;
     subs.forEach(s => s.passed ? passed++ : failed++);
 
-    // Aggregation for Bar Chart (Avg score per exam)
     const examScores = {};
     subs.forEach(s => {
       if(s.exam) {
@@ -177,6 +205,22 @@ app.get('/api/admin/dashboard', auth, adminOnly, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Departments Management
+app.post('/api/admin/departments', auth, adminOnly, async (req, res) => {
+  try {
+    const dept = await Department.create({ name: req.body.name });
+    res.json({ dept });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/departments/:id', auth, adminOnly, async (req, res) => {
+  try {
+    await Department.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Exams Management
 app.post('/api/admin/exams', auth, adminOnly, async (req, res) => {
   try {
     const { title, description, department, duration, passingPercentage } = req.body;
@@ -202,10 +246,19 @@ app.post('/api/admin/exams/:id/questions', auth, adminOnly, async (req, res) => 
       newQ.options = options.filter(o => o.trim());
       newQ.correctAnswer = parseInt(correctAnswer);
     } else if (type === 'file') {
-      newQ.questionFile = questionFile; // Base64
+      newQ.questionFile = questionFile;
     }
     
     exam.questions.push(newQ);
+    await exam.save();
+    res.json({ exam });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/admin/exams/:id/questions/:qIdx', auth, adminOnly, async (req, res) => {
+  try {
+    const exam = await Exam.findOne({ _id: req.params.id, createdBy: req.session.userId });
+    exam.questions.splice(req.params.qIdx, 1);
     await exam.save();
     res.json({ exam });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -233,14 +286,42 @@ app.put('/api/admin/submissions/:id/grade', auth, adminOnly, async (req, res) =>
     } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Videos Management
+app.post('/api/admin/videos', auth, adminOnly, async (req, res) => {
+  try {
+    const video = await Video.create({ title: req.body.title, youtubeUrl: req.body.youtubeUrl });
+    res.json({ video });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/admin/videos/:id', auth, adminOnly, async (req, res) => {
+  try {
+    await Video.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Messages Management
+app.get('/api/admin/students', auth, adminOnly, async (req, res) => {
+  try {
+    const students = await User.find({ role: 'student' }, 'name studentId department').sort({ name: 1 }).lean();
+    res.json(students);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/admin/messages', auth, adminOnly, async (req, res) => {
+  try {
+    const msg = await Message.create({ ...req.body, fromAdmin: req.session.userId });
+    res.json({ msg });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── Student APIs ───
 app.get('/api/student/dashboard', auth, async (req, res) => {
   try {
     const user = await User.findById(req.session.userId);
     const exams = await Exam.find({ isActive: true, $or: [{ department: user.department }, { department: 'All' }] }).lean();
     const subs = await Submission.find({ user: req.session.userId, isSubmitted: true }).populate('exam').lean();
+    const msgCount = await Message.countDocuments({ toStudent: req.session.userId });
     
-    // Performance Chart Data
     const chartLabels = [];
     const chartData = [];
     subs.forEach(s => {
@@ -250,7 +331,7 @@ app.get('/api/student/dashboard', auth, async (req, res) => {
       }
     });
 
-    res.json({ exams, submissions: subs, chartLabels, chartData });
+    res.json({ exams, submissions: subs, chartLabels, chartData, msgCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -307,4 +388,16 @@ app.get('/api/student/submissions/:id', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log('ExamForge running on port', PORT));
+// Student General Fetches (Videos and Messages)
+app.get('/api/videos', auth, async (req, res) => {
+  try {
+    res.json(await Video.find().sort({ createdAt: -1 }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/messages', auth, async (req, res) => {
+  try {
+    res.json(await Message.find({ toStudent: req.session.userId }).populate('fromAdmin', 'name').sort({ createdAt: -1 }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.listen(PORT, () => console.log('JavaGoat Exam Portal running on port', PORT));
