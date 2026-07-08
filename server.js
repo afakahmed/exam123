@@ -25,7 +25,9 @@ app.use(session({
 }));
 
 // ─── MongoDB Connection ───
-mongoose.connect(MONGO_URI).then(() => console.log('MongoDB connected')).catch(e => console.error('MongoDB error:', e.message));
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(e => console.error('MongoDB error:', e.message));
 mongoose.connection.on('disconnected', () => console.log('MongoDB disconnected'));
 
 // ─── Mongoose Models ───
@@ -107,11 +109,6 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
 
-app.get('/api/me', (req, res) => {
-  if (!req.session.userId) return res.json({ user: null });
-  res.json({ user: { id: req.session.userId, name: req.session.userName, role: req.session.userRole, email: req.session.userEmail } });
-});
-
 // ─── Admin API ───
 app.get('/api/admin/exams', auth, adminOnly, async (req, res) => {
   try {
@@ -177,17 +174,6 @@ app.post('/api/admin/exams/:id/questions', auth, adminOnly, async (req, res) => 
     const exam = await Exam.findOne({ _id: req.params.id, createdBy: req.session.userId });
     if (!exam) return res.status(404).json({ error: 'Not found' });
     exam.questions.push({ questionText, options: options.filter(o => o.trim()), correctAnswer: parseInt(correctAnswer), marks: parseInt(marks) || 1 });
-    await exam.save();
-    res.json({ exam });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.put('/api/admin/exams/:id/questions/:qi', auth, adminOnly, async (req, res) => {
-  try {
-    const { questionText, options, correctAnswer, marks } = req.body;
-    const exam = await Exam.findOne({ _id: req.params.id, createdBy: req.session.userId });
-    if (!exam || req.params.qi >= exam.questions.length) return res.status(404).json({ error: 'Not found' });
-    exam.questions[req.params.qi] = { questionText, options: options.filter(o => o.trim()), correctAnswer: parseInt(correctAnswer), marks: parseInt(marks) || 1 };
     await exam.save();
     res.json({ exam });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -307,14 +293,11 @@ app.post('/api/seed', async (req, res) => {
       questions: [
         { questionText: 'Which keyword declares a block-scoped variable in JavaScript?', options: ['var', 'let', 'both', 'none'], correctAnswer: 1, marks: 2 },
         { questionText: 'What does typeof null return?', options: ['null', 'undefined', 'object', 'boolean'], correctAnswer: 2, marks: 2 },
-        { questionText: 'Which method converts a JSON string to an object?', options: ['JSON.stringify()', 'JSON.parse()', 'JSON.convert()', 'JSON.toObject()'], correctAnswer: 1, marks: 2 },
-        { questionText: 'What is the output of: console.log(2 + "2")?', options: ['4', '"22"', 'NaN', 'Error'], correctAnswer: 1, marks: 2 },
-        { questionText: 'Which array method creates a new array with filtered elements?', options: ['map()', 'filter()', 'reduce()', 'forEach()'], correctAnswer: 1, marks: 2 }
+        { questionText: 'Which method converts a JSON string to an object?', options: ['JSON.stringify()', 'JSON.parse()', 'JSON.convert()', 'JSON.toObject()'], correctAnswer: 1, marks: 2 }
       ]
     });
     res.json({ message: 'Seeded! Admin: admin@exam.com/admin123 | Student: student@exam.com/student123' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 app.listen(PORT, () => console.log('ExamForge running on port', PORT));
